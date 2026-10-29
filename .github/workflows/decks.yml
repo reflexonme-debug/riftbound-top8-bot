@@ -28,10 +28,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Installer les bibliotheques
+      - name: Installer les dependances
         run: python -m pip install requests beautifulsoup4
 
-      - name: Surveiller les Top 8
+      - name: Actualiser les Top 8 Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_DECKS_WEBHOOK_URL }}
         run: |
@@ -40,17 +40,15 @@ jobs:
           import re
           import json
           import time
-          import requests
-
           from datetime import date
           from urllib.parse import urljoin, urlparse
+
+          import requests
           from bs4 import BeautifulSoup
 
           ROOT = "https://riftwatch.gg"
-          WEBHOOK = os.environ["DISCORD_WEBHOOK"].rstrip("/")
           STATE_FILE = "top8_messages.json"
-
-          # Sortie officielle de Radiance.
+          WEBHOOK = os.environ["DISCORD_WEBHOOK"].rstrip("/")
           START_DATE = date(2026, 10, 23)
 
           OFFICIAL = (
@@ -61,42 +59,40 @@ jobs:
               "showdown"
           )
 
-          session = requests.Session()
-          session.headers.update({
-              "User-Agent": "Mozilla/5.0 RiftboundTop8Bot/8.0"
-          })
+          http = requests.Session()
+          http.headers["User-Agent"] = (
+              "Mozilla/5.0 RiftboundTop8/9.0"
+          )
 
           def clean(value):
-              return " ".join(str(value).split())
+              return " ".join(str(value or "").split())
 
           def fetch(url):
-              response = session.get(url, timeout=30)
+              response = http.get(url, timeout=30)
               response.raise_for_status()
               return BeautifulSoup(
                   response.text, "html.parser"
               )
 
-          def path_is(url, section):
-              parsed = urlparse(url)
+          def valid_url(url, section):
+              p = urlparse(url)
               return (
-                  parsed.scheme == "https"
-                  and parsed.netloc in (
+                  p.scheme == "https"
+                  and p.netloc in (
                       "riftwatch.gg",
                       "www.riftwatch.gg"
                   )
                   and re.fullmatch(
                       r"/" + section + r"/[^/]+/?",
-                      parsed.path
+                      p.path
                   ) is not None
               )
 
           def tournament_date(url):
-              path = urlparse(url).path
               match = re.search(
                   r"(\d{4}-\d{2}-\d{2})/?$",
-                  path
+                  urlparse(url).path
               )
-
               if not match:
                   return None
 
@@ -111,35 +107,22 @@ jobs:
               soup = fetch(ROOT + "/tournaments/")
               events = {}
 
-              for link in soup.find_all(
-                  "a", href=True
-              ):
-                  url = urljoin(
-                      ROOT, link["href"]
-                  )
-
-                  if not path_is(
-                      url, "tournaments"
-                  ):
+              for a in soup.select("a[href]"):
+                  url = urljoin(ROOT, a["href"])
+                  if not valid_url(url, "tournaments"):
                       continue
 
-                  event_day = tournament_date(url)
-
-                  # Date absente ou anterieure
-                  # a Radiance : ne pas publier.
-                  if (
-                      event_day is None
-                      or event_day < START_DATE
-                  ):
+                  day = tournament_date(url)
+                  if day is None or day < START_DATE:
                       continue
 
                   title = clean(
-                      link.get_text(" ", strip=True)
+                      a.get_text(" ", strip=True)
                   )
 
                   if not any(
-                      term in title.lower()
-                      for term in OFFICIAL
+                      word in title.lower()
+                      for word in OFFICIAL
                   ):
                       continue
 
@@ -147,41 +130,170 @@ jobs:
 
               return sorted(
                   events.items(),
-                  key=lambda item: (
-                      tournament_date(item[0]),
-                      item[0]
+                  key=lambda e: (
+                      tournament_date(e[0]), e[0]
                   ),
                   reverse=True
               )
 
-          def read_legend(deck_url):
+          def extract_rank(text):
+              match = re.search(
+                  r"^\s*0?([1-8])(?:\D|$)",
+                  text
+              )
+              return (
+                  str(int(match.group(1)))
+                  if match else None
+              )
+
+          def read_table(soup):
+              rankings = {}
+
+              # Le tableau contient :
+              # Place | Player | Legend |
+              # Record | Decklist.
+              for table in soup.find_all("table"):
+                  rows = table.find_all("tr")
+
+                  if not rows:
+                      continue
+
+                  headers = [
+                      clean(c.get_text(
+                          " ", strip=True
+                      )).lower()
+                      for c in rows[0].find_all(
+                          ["th", "td"]
+                      )
+                  ]
+
+                  required = (
+                      "place", "player", "legend"
+                  )
+                  if not all(
+                      field in headers
+                      for field in required
+                  ):
+                      continue
+
+                  rank_col = headers.index("place")
+                  player_col = headers.index("player")
+                  legend_col = headers.index("legend")
+                  deck_col = (
+                      headers.index("decklist")
+                      if "decklist" in headers
+                      else None
+                  )
+
+                  for row in rows[1:]:
+                      cells = row.find_all(
+                          ["td", "th"],
+                          recursive=False
+                      )
+                      needed = max(
+                          rank_col,
+                          player_col,
+                          legend_col
+                      )
+
+                      if len(cells) <= needed:
+                          continue
+
+                      rank = extract_rank(
+                          clean(cells[rank_col].get_text(
+                              " ", strip=True
+                          ))
+                      )
+
+                      if rank is None:
+                          continue
+
+                      player = clean(
+                          cells[player_col].get_text(
+                              " ", strip=True
+                          )
+                      )
+                      legend = clean(
+                          cells[legend_col].get_text(
+                              " ", strip=True
+                          )
+                      )
+
+                      # Utiliser le texte alternatif
+                      # de la carte si necessaire.
+                      if not legend:
+                          img = cells[legend_col].find(
+                              "img"
+                          )
+                          if img:
+                              legend = clean(
+                                  img.get("alt", "")
+                              )
+
+                      deck_url = None
+                      search_in = (
+                          cells[deck_col]
+                          if (
+                              deck_col is not None
+                              and len(cells) > deck_col
+                          )
+                          else row
+                      )
+
+                      for a in search_in.select("a[href]"):
+                          full = urljoin(
+                              ROOT, a["href"]
+                          )
+                          if valid_url(full, "decks"):
+                              deck_url = full
+                              break
+
+                      if player:
+                          rankings[rank] = {
+                              "player": player,
+                              "legend": (
+                                  legend or None
+                              ),
+                              "url": deck_url
+                          }
+
+                      if len(rankings) >= 8:
+                          break
+
+                  if rankings:
+                      break
+
+              return rankings
+
+          def read_deck_legend(deck_url):
               soup = fetch(deck_url)
 
-              # 1. Carte marquee Legend
-              # dans la section du deck.
+              for image in soup.find_all("img"):
+                  alt = clean(image.get("alt", ""))
+                  match = re.match(
+                      r"^(.+?)\s*\(Legend\)$",
+                      alt,
+                      flags=re.IGNORECASE
+                  )
+                  if match:
+                      return match.group(1).strip()
+
               for heading in soup.find_all(
                   ["h2", "h3", "h4"]
               ):
-                  heading_text = clean(
+                  text = clean(
                       heading.get_text(
                           " ", strip=True
                       )
                   ).lower()
 
-                  if (
-                      "legend and champion"
-                      not in heading_text
-                  ):
+                  if "legend and champion" not in text:
                       continue
 
                   for item in heading.next_elements:
-                      tag = getattr(
-                          item, "name", None
-                      )
+                      tag = getattr(item, "name", None)
 
-                      if tag in (
-                          "h2", "h3", "h4"
-                      ):
+                      if tag in ("h2", "h3", "h4"):
                           break
 
                       if tag != "li":
@@ -192,7 +304,6 @@ jobs:
                               " ", strip=True
                           )
                       )
-
                       if not re.search(
                           r"\bLegend\b",
                           item_text,
@@ -201,59 +312,64 @@ jobs:
                           continue
 
                       link = item.find("a")
-
-                      if not link:
-                          continue
-
-                      name = clean(
-                          link.get_text(
-                              " ", strip=True
+                      if link:
+                          name = clean(
+                              link.get_text(
+                                  " ", strip=True
+                              )
                           )
-                      )
-
-                      name = re.sub(
-                          r"^Quantity\s*\d+\s*",
-                          "",
-                          name,
-                          flags=re.IGNORECASE
-                      )
-
-                      if name:
-                          return name[:100]
-
-              # 2. Image dont le texte
-              # alternatif precise Legend.
-              for image in soup.find_all("img"):
-                  alt = clean(
-                      image.get("alt", "")
-                  )
-
-                  match = re.match(
-                      r"^(.+?)\s*\(Legend\)$",
-                      alt,
-                      re.IGNORECASE
-                  )
-
-                  if match:
-                      return match.group(1).strip()
+                          name = re.sub(
+                              r"^Quantity\s*\d+\s*",
+                              "",
+                              name,
+                              flags=re.IGNORECASE
+                          )
+                          if name:
+                              return name[:100]
 
               return None
 
           def read_tournament(url, previous):
               soup = fetch(url)
-              heading = soup.find("h1")
 
+              h1 = soup.find("h1")
               title = (
-                  clean(
-                      heading.get_text(
-                          " ", strip=True
-                      )
-                  )
-                  if heading
-                  else "Tournoi Riftbound"
+                  clean(h1.get_text(" ", strip=True))
+                  if h1 else "Tournoi Riftbound"
               ).strip(" /")
 
-              rankings = {}
+              rankings = read_table(soup)
+
+              # Secours si le tableau est absent :
+              # lire les liens de deck classes.
+              if not rankings:
+                  for a in soup.select("a[href]"):
+                      deck_url = urljoin(
+                          ROOT, a["href"]
+                      )
+                      if not valid_url(
+                          deck_url, "decks"
+                      ):
+                          continue
+
+                      label = clean(
+                          a.get_text(" ", strip=True)
+                      )
+                      match = re.match(
+                          r"^#\s*([1-8])\s+(.+)$",
+                          label
+                      )
+                      if not match:
+                          continue
+
+                      rank = str(int(match.group(1)))
+                      rankings.setdefault(rank, {
+                          "player": clean(
+                              match.group(2)
+                          ),
+                          "legend": None,
+                          "url": deck_url
+                      })
 
               old_rankings = (
                   (previous or {}).get(
@@ -261,81 +377,45 @@ jobs:
                   ) or {}
               )
 
-              for link in soup.find_all(
-                  "a", href=True
-              ):
-                  deck_url = urljoin(
-                      ROOT, link["href"]
-                  )
+              for rank, entry in rankings.items():
+                  old = old_rankings.get(rank) or {}
 
-                  if not path_is(
-                      deck_url, "decks"
-                  ):
-                      continue
-
-                  label = clean(
-                      link.get_text(
-                          " ", strip=True
-                      )
-                  )
-
-                  match = re.match(
-                      r"^#\s*([1-8])\s+(.+)$",
-                      label
-                  )
-
-                  if not match:
-                      continue
-
-                  rank = str(
-                      int(match.group(1))
-                  )
-
-                  if rank in rankings:
-                      continue
-
-                  player = clean(
-                      match.group(2)
-                  )
-
-                  old = (
-                      old_rankings.get(rank)
-                      or {}
-                  )
-
-                  try:
-                      legend = read_legend(
-                          deck_url
-                      )
-                  except Exception as error:
-                      print(
-                          "Lecture Legend echouee :",
-                          urlparse(deck_url).path,
-                          type(error).__name__
-                      )
-                      legend = None
-
-                  # Garder l'ancienne Legend
-                  # uniquement si la decklist
-                  # est restee identique.
                   if (
-                      not legend
-                      and old.get("url") == deck_url
+                      not entry["legend"]
+                      and entry["url"]
                   ):
-                      legend = old.get(
-                          "legend"
-                      )
+                      try:
+                          entry["legend"] = (
+                              read_deck_legend(
+                                  entry["url"]
+                              )
+                          )
+                      except Exception as exc:
+                          print(
+                              "Lecture Legend impossible :",
+                              rank,
+                              type(exc).__name__
+                          )
 
-                  rankings[rank] = {
-                      "player": player,
-                      "url": deck_url,
-                      "legend": legend
-                  }
+                  if not entry["legend"]:
+                      if (
+                          old.get("player")
+                          == entry["player"]
+                          and old.get("url")
+                          == entry["url"]
+                      ):
+                          entry["legend"] = old.get(
+                              "legend"
+                          )
 
                   print(
-                      player,
-                      "- Legend :",
-                      legend or "Non renseignee"
+                      rank,
+                      entry["player"],
+                      "-",
+                      entry["legend"]
+                      or "Legend non renseignee",
+                      "- deck :",
+                      "oui" if entry["url"] else "non"
                   )
 
               return title, rankings
@@ -349,51 +429,54 @@ jobs:
               }
 
               for rank in range(1, 9):
-                  entry = rankings.get(
-                      str(rank)
-                  )
+                  entry = rankings.get(str(rank))
 
                   if not entry:
                       lines.append(
                           f"**{rank}.** "
-                          "Decklist non disponible"
+                          "Resultat non publie"
                       )
                       lines.append("")
                       continue
 
-                  symbol = medals.get(
-                      rank, "🃏"
-                  )
-
+                  symbol = medals.get(rank, "🃏")
                   legend = (
                       entry.get("legend")
-                      or "Non renseignée"
+                      or "Non renseignee"
                   )
 
-                  lines.extend([
+                  lines.append(
                       f"{symbol} **{rank}. "
-                      f"{entry['player']}**",
-                      f"🃏 **Legend : {legend}**",
-                      "🔗 [Voir le deck]"
-                      f"({entry['url']})",
-                      ""
-                  ])
+                      f"{entry['player']}**"
+                  )
+                  lines.append(
+                      "🃏 **Legend : "
+                      + legend + "**"
+                  )
+
+                  if entry.get("url"):
+                      lines.append(
+                          "🔗 [Voir le deck]"
+                          f"({entry['url']})"
+                      )
+                  else:
+                      lines.append(
+                          "🔗 Decklist non publiee"
+                      )
+
+                  lines.append("")
 
               lines.append(
-                  "📋 [Résultats complets]"
+                  "📋 [Resultats complets]"
                   f"({url})"
-              )
-
-              event_day = tournament_date(
-                  url
               )
 
               return {
                   "title": "🏆 " + title[:220],
                   "url": url,
-                  "description": (
-                      "\n".join(lines)[:4000]
-                  ),
+                  "description": "\n".join(
+                      lines
+                  )[:4000],
                   "color": 15844367,
                   "footer": {
                       "text": (
@@ -419,19 +502,17 @@ jobs:
                   delay = response.json().get(
                       "retry_after", 3
                   )
-
                   time.sleep(
                       min(float(delay) + 1, 30)
                   )
 
               raise RuntimeError(
-                  "Limite Discord atteinte"
+                  "Limite de requetes Discord"
               )
 
           def create_message(embed):
               response = discord(
-                  "POST",
-                  "?wait=true",
+                  "POST", "?wait=true",
                   {
                       "username": "Riftbound Top 8",
                       "embeds": [embed],
@@ -440,15 +521,10 @@ jobs:
                       }
                   }
               )
-
               response.raise_for_status()
-              time.sleep(1)
+              return str(response.json()["id"])
 
-              return str(
-                  response.json()["id"]
-              )
-
-          def update_message(message_id, embed):
+          def edit_message(message_id, embed):
               response = discord(
                   "PATCH",
                   "/messages/" + str(message_id),
@@ -464,31 +540,32 @@ jobs:
                   return False
 
               response.raise_for_status()
-              time.sleep(1)
               return True
 
           def load_state():
-              if not os.path.exists(
-                  STATE_FILE
-              ):
+              if not os.path.exists(STATE_FILE):
                   return {}
 
               with open(
                   STATE_FILE,
                   encoding="utf-8"
-              ) as file:
-                  return json.load(file)
+              ) as f:
+                  content = f.read().strip()
+
+              return (
+                  json.loads(content)
+                  if content else {}
+              )
 
           def save_state(state):
               with open(
                   STATE_FILE, "w",
                   encoding="utf-8"
-              ) as file:
+              ) as f:
                   json.dump(
-                      state,
-                      file,
-                      ensure_ascii=False,
+                      state, f,
                       indent=2,
+                      ensure_ascii=False,
                       sort_keys=True
                   )
 
@@ -502,10 +579,7 @@ jobs:
               )
 
               if not events:
-                  print(
-                      "Aucun nouveau tournoi "
-                      "admissible trouve."
-                  )
+                  print("Aucun tournoi trouve")
                   return
 
               created = 0
@@ -513,11 +587,10 @@ jobs:
               unchanged = 0
               errors = 0
 
-              # Verifier en priorite les
-              # tournois deja publies.
+              # Verifier d'abord les tournois
+              # ayant deja un message Discord.
               events.sort(
-                  key=lambda item:
-                      item[0] not in state
+                  key=lambda x: x[0] not in state
               )
 
               for url, _ in events:
@@ -530,8 +603,7 @@ jobs:
 
                       if not rankings:
                           print(
-                              "Pas de decklist :",
-                              title
+                              "Classement absent :", title
                           )
                           continue
 
@@ -541,7 +613,7 @@ jobs:
                       }
 
                       if previous:
-                          old_snapshot = {
+                          old = {
                               "title": previous.get(
                                   "title"
                               ),
@@ -550,7 +622,7 @@ jobs:
                               )
                           }
 
-                          if snapshot == old_snapshot:
+                          if snapshot == old:
                               unchanged += 1
                               continue
 
@@ -568,12 +640,12 @@ jobs:
                               previous["message_id"]
                           )
 
-                          if update_message(
+                          if edit_message(
                               message_id, embed
                           ):
                               updated += 1
                               print(
-                                  "Mis a jour :",
+                                  "Message modifie :",
                                   title
                               )
                           else:
@@ -585,7 +657,6 @@ jobs:
                                   "Message recree :",
                                   title
                               )
-
                       else:
                           message_id = create_message(
                               embed
@@ -601,7 +672,6 @@ jobs:
                           "title": title,
                           "rankings": rankings
                       }
-
                       save_state(state)
 
                   except Exception as error:
@@ -609,25 +679,14 @@ jobs:
                       print(
                           "Erreur tournoi :",
                           url,
-                          type(error).__name__
+                          type(error).__name__,
+                          str(error)[:150]
                       )
 
-              print(
-                  "Nouveaux messages :",
-                  created
-              )
-              print(
-                  "Messages modifies :",
-                  updated
-              )
-              print(
-                  "Sans changement :",
-                  unchanged
-              )
-              print(
-                  "Erreurs :",
-                  errors
-              )
+              print("Nouveaux messages :", created)
+              print("Messages modifies :", updated)
+              print("Sans changement :", unchanged)
+              print("Erreurs :", errors)
 
               if errors:
                   raise RuntimeError(
@@ -640,7 +699,7 @@ jobs:
 
           python decks.py
 
-      - name: Sauvegarder la memoire Discord
+      - name: Sauvegarder les messages Discord
         if: always()
         run: |
           if [ -f top8_messages.json ]; then
@@ -648,7 +707,7 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add top8_messages.json
             if ! git diff --cached --quiet; then
-              git commit -m "Maj des Top 8 depuis Radiance"
+              git commit -m "Maj des classements Top 8"
               git push
             fi
           fi
