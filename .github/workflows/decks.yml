@@ -1,0 +1,329 @@
+
+name: Riftbound Top 8 Tournois
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 9 * * *'
+      timezone: 'Europe/Paris'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: riftbound-top8
+  cancel-in-progress: false
+
+jobs:
+  decks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Recuperer le depot
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Installer les bibliotheques
+        run: pip install requests beautifulsoup4 feedparser
+
+      - name: Chercher les Top 8 et envoyer Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_DECKS_WEBHOOK_URL }}
+        run: |
+          cat > decks.py <<'PY'
+          import os
+          import json
+          import re
+          import time
+          from urllib.parse import urljoin, urlparse
+          import requests
+          import feedparser
+          from bs4 import BeautifulSoup
+
+          WEBHOOK = os.environ["DISCORD_WEBHOOK"]
+          SITE = "https://riftbound.gg"
+          FILE = "top8_seen.json"
+
+          session = requests.Session()
+          session.headers.update({
+              "User-Agent": "Mozilla/5.0 RiftboundTop8Bot/1.0"
+          })
+
+          TERMS = [
+              "regional qualifier",
+              "regional open",
+              "regional championship",
+              "national championship",
+              "world championship",
+              "showdown",
+              "official tournament"
+          ]
+
+          def get(url):
+              r = session.get(url, timeout=35)
+              r.raise_for_status()
+              return r.text
+
+          def tournament(title):
+              text = title.lower()
+              return (
+                  any(term in text for term in TERMS)
+                  and any(term in text for term in [
+                      "result", "top 8",
+                      "deck", "report", "winner"
+                  ])
+              )
+
+          def clean(text):
+              return " ".join(text.split())
+
+          def top8_details(html, url):
+              soup = BeautifulSoup(html, "html.parser")
+
+              start = None
+              for heading in soup.find_all(
+                  ["h2", "h3"]
+              ):
+                  title = clean(
+                      heading.get_text(" ", strip=True)
+                  ).lower()
+
+                  if (
+                      "top 8" in title
+                      and (
+                          "legend" in title
+                          or "deck" in title
+                      )
+                  ):
+                      start = heading
+                      break
+
+              if start is None:
+                  return None
+
+              lines = []
+              links = []
+              current_legend = None
+
+              for tag in start.next_elements:
+                  if getattr(tag, "name", None) == "h2":
+                      break
+
+                  if not getattr(tag, "name", None):
+                      continue
+
+                  if tag.name in ("h3", "h4"):
+                      name = clean(
+                          tag.get_text(" ", strip=True)
+                      )
+
+                      if name:
+                          current_legend = name
+                          lines.append("🃏 **" + name + "**")
+
+                  elif tag.name == "li":
+                      if not current_legend:
+                          continue
+
+                      detail = clean(
+                          tag.get_text(" ", strip=True)
+                      )
+
+                      if (
+                          detail
+                          and "top ranked player"
+                          in detail.lower()
+                      ):
+                          lines.append("• " + detail[:180])
+
+                  elif tag.name == "a":
+                      href = tag.get("href")
+                      if not href:
+                          continue
+
+                      full = urljoin(url, href)
+                      parsed = urlparse(full)
+
+                      if parsed.netloc not in (
+                          "riftbound.gg",
+                          "www.riftbound.gg"
+                      ):
+                          continue
+
+                      if "/decks/" in parsed.path:
+                          if full not in links:
+                              links.append(full)
+
+              if not lines:
+                  return None
+
+              return lines, links
+
+          def send(title, url, details):
+              lines, links = details
+
+              description = (
+                  "\n".join(lines[:24])[:3200]
+              )
+
+              if links:
+                  description += (
+                      "\n\n**Decklists accessibles :**\n"
+                  )
+                  for i, link in enumerate(
+                      links[:8], start=1
+                  ):
+                      description += (
+                          f"[Voir deck {i}]({link})\n"
+                      )
+              else:
+                  description += (
+                      "\n\nLes decklists individuelles "
+                      "ne sont pas identifiées "
+                      "automatiquement. "
+                      "Ouvre le rapport complet."
+                  )
+
+              payload = {
+                  "username": "Riftbound Top 8",
+                  "embeds": [{
+                      "title": "🏆 " + title[:220],
+                      "url": url,
+                      "description": description[:4000],
+                      "color": 15844367,
+                      "footer": {
+                          "text": (
+                              "Source : Riftbound.gg"
+                              " | Top 8 publie"
+                          )
+                      }
+                  }]
+              }
+
+              response = session.post(
+                  WEBHOOK,
+                  json=payload,
+                  timeout=30
+              )
+              response.raise_for_status()
+              time.sleep(2)
+
+          def discover():
+              feed_url = SITE + "/feed/"
+              feed_data = get(feed_url)
+              feed = feedparser.parse(feed_data)
+
+              candidates = []
+
+              for item in feed.entries:
+                  title = clean(
+                      BeautifulSoup(
+                          item.get("title", ""),
+                          "html.parser"
+                      ).get_text(" ", strip=True)
+                  )
+                  url = item.get("link", "")
+
+                  if (
+                      tournament(title)
+                      and url.startswith(SITE)
+                  ):
+                      candidates.append(
+                          (title, url)
+                      )
+
+              return candidates
+
+          def main():
+              if os.path.exists(FILE):
+                  with open(
+                      FILE, encoding="utf-8"
+                  ) as f:
+                      seen = set(json.load(f))
+              else:
+                  seen = set()
+
+              print("Recherche des tournois Riftbound")
+
+              candidates = discover()
+              print(
+                  "Rapports trouves :",
+                  len(candidates)
+              )
+
+              new_count = 0
+
+              # Au premier lancement, ne pas
+              # inonder le salon d'anciens tournois.
+              limit = 2 if not seen else 5
+
+              for title, url in candidates:
+                  if url in seen:
+                      continue
+
+                  try:
+                      html = get(url)
+                      details = top8_details(
+                          html, url
+                      )
+
+                      if details is None:
+                          print(
+                              "Pas de Top 8 exploitable :",
+                              url
+                          )
+                          continue
+
+                      send(title, url, details)
+                      seen.add(url)
+
+                      print(
+                          "Envoye sur Discord :",
+                          title
+                      )
+
+                      new_count += 1
+                      if new_count >= limit:
+                          break
+
+                  except Exception as exc:
+                      print(
+                          "Erreur pour", url,
+                          repr(exc)
+                      )
+
+              with open(
+                  FILE, "w", encoding="utf-8"
+              ) as f:
+                  json.dump(
+                      sorted(seen),
+                      f,
+                      indent=2,
+                      ensure_ascii=False
+                  )
+
+              print(
+                  "Nouveaux rapports envoyes :",
+                  new_count
+              )
+
+          if __name__ == "__main__":
+              main()
+          PY
+
+          python decks.py
+
+      - name: Memoriser les rapports deja envoyes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add top8_seen.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Mise a jour des tournois deja publies"
+            git push
+          fi
