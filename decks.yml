@@ -22,8 +22,6 @@ jobs:
     steps:
       - name: Recuperer le depot
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
       - name: Installer Python
         uses: actions/setup-python@v6
@@ -33,7 +31,7 @@ jobs:
       - name: Installer les bibliotheques
         run: python -m pip install requests beautifulsoup4
 
-      - name: Chercher et actualiser les Top 8 Discord
+      - name: Chercher les Top 8 et actualiser Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_DECKS_WEBHOOK_URL }}
         run: |
@@ -52,9 +50,9 @@ jobs:
           STATE_FILE = "top8_messages.json"
           WEBHOOK = os.environ["DISCORD_WEBHOOK"].rstrip("/")
 
-          web = requests.Session()
-          web.headers.update({
-              "User-Agent": "Mozilla/5.0 RiftboundTop8Bot/4.0"
+          session = requests.Session()
+          session.headers.update({
+              "User-Agent": "Mozilla/5.0 RiftboundTop8Bot/5.0"
           })
 
           OFFICIAL = (
@@ -69,7 +67,9 @@ jobs:
               return " ".join(str(value).split())
 
           def fetch(url):
-              response = web.get(url, timeout=30)
+              response = session.get(
+                  url, timeout=30
+              )
               response.raise_for_status()
               return BeautifulSoup(
                   response.text, "html.parser"
@@ -108,8 +108,8 @@ jobs:
                       continue
 
                   if not any(
-                      word in title.lower()
-                      for word in OFFICIAL
+                      term in title.lower()
+                      for term in OFFICIAL
                   ):
                       continue
 
@@ -121,8 +121,24 @@ jobs:
               try:
                   soup = fetch(deck_url)
 
-                  # Lire la section contenant
-                  # la carte de type Legend.
+                  # Methode 1 :
+                  # image de la Legend.
+                  for img in soup.find_all("img"):
+                      alt = clean(
+                          img.get("alt", "")
+                      )
+
+                      match = re.match(
+                          r"^(.+?)\s*\(Legend\)$",
+                          alt,
+                          flags=re.IGNORECASE
+                      )
+
+                      if match:
+                          return match.group(1).strip()
+
+                  # Methode 2 :
+                  # section Legend and champion.
                   for heading in soup.find_all(
                       ["h2", "h3", "h4"]
                   ):
@@ -132,27 +148,22 @@ jobs:
                           )
                       ).lower()
 
-                      if (
-                          "legend and champion"
-                          not in label
-                      ):
+                      if "legend and champion" not in label:
                           continue
 
-                      for element in heading.next_elements:
+                      for item in heading.next_elements:
                           tag = getattr(
-                              element, "name", None
+                              item, "name", None
                           )
 
-                          if tag in (
-                              "h2", "h3", "h4"
-                          ):
+                          if tag in ("h2", "h3", "h4"):
                               break
 
                           if tag != "li":
                               continue
 
-                          link = element.find("a")
-                          if link is None:
+                          link = item.find("a")
+                          if not link:
                               continue
 
                           name = clean(
@@ -169,7 +180,7 @@ jobs:
                           )
 
                           name = re.sub(
-                              r"\s+\d+\s+energy.*$",
+                              r"\s+Champion.*$",
                               "",
                               name,
                               flags=re.IGNORECASE
@@ -178,26 +189,34 @@ jobs:
                           if name:
                               return name[:100]
 
-                  # Autre lecture du titre de
-                  # la page du deck.
-                  if soup.title:
-                      title = clean(
-                          soup.title.get_text(
-                              " ", strip=True
-                          )
-                      )
-                      match = re.match(
-                          r"(.+?) Riftbound deck",
-                          title,
-                          flags=re.IGNORECASE
-                      )
-                      if match:
-                          return match.group(1)
+                  # Methode 3 :
+                  # information en haut de page.
+                  text = soup.get_text(
+                      " ", strip=True
+                  )
+
+                  match = re.search(
+                      r"([A-Za-zÀ-ÿ' -]+,\s*"
+                      r"[A-Za-zÀ-ÿ' -]+)"
+                      r"\s+(?:Calm|Chaos|Fury|"
+                      r"Mind|Body|Order)",
+                      text
+                  )
+
+                  if match:
+                      return clean(
+                          match.group(1)
+                      )[-100:]
+
+                  print(
+                      "Legend introuvable :",
+                      urlparse(deck_url).path
+                  )
 
               except Exception as error:
                   print(
-                      "Legend non lisible :",
-                      deck_url,
+                      "Erreur Legend :",
+                      urlparse(deck_url).path,
                       type(error).__name__
                   )
 
@@ -214,17 +233,13 @@ jobs:
 
               rankings = {}
 
-              # Les liens du classement sont
-              # affiches sous la forme :
-              # #1 Nam Dang, #2 Alex Gorica, etc.
+              # Recuperer les decks classes #1 a #8.
               for a in soup.select("a[href]"):
                   full = urljoin(
                       ROOT, a.get("href", "")
                   )
 
-                  if not valid_url(
-                      full, "/decks/"
-                  ):
+                  if not valid_url(full, "/decks/"):
                       continue
 
                   if not re.fullmatch(
@@ -242,7 +257,7 @@ jobs:
                       label
                   )
 
-                  if match is None:
+                  if not match:
                       continue
 
                   rank = str(int(match.group(1)))
@@ -255,29 +270,30 @@ jobs:
                           "legend": None
                       }
 
-              if not rankings:
-                  return title, {}
-
               old_rankings = (
-                  (previous or {}).get("rankings")
-                  or {}
+                  (previous or {}).get(
+                      "rankings", {}
+                  )
               )
 
               for rank, entry in rankings.items():
-                  old = old_rankings.get(rank, {})
+                  old = old_rankings.get(
+                      rank, {}
+                  )
 
-                  # Si le deck n'a pas change et
-                  # que sa Legend est deja connue,
-                  # on conserve cette information.
-                  # Sinon, on relit sa decklist.
-                  if (
-                      old.get("url") == entry["url"]
-                      and old.get("legend")
-                  ):
-                      entry["legend"] = old["legend"]
-                  else:
-                      entry["legend"] = read_legend(
-                          entry["url"]
+                  # Verifier la Legend a chaque
+                  # passage. Si le site ne repond
+                  # pas, conserver l'ancienne
+                  # seulement pour le meme deck.
+                  legend = read_legend(
+                      entry["url"]
+                  )
+
+                  if legend:
+                      entry["legend"] = legend
+                  elif old.get("url") == entry["url"]:
+                      entry["legend"] = old.get(
+                          "legend"
                       )
 
               return title, rankings
@@ -291,8 +307,13 @@ jobs:
               }
 
               for rank in range(1, 9):
-                  entry = rankings.get(str(rank))
-                  symbol = medals.get(rank, "🃏")
+                  entry = rankings.get(
+                      str(rank)
+                  )
+
+                  symbol = medals.get(
+                      rank, "🃏"
+                  )
 
                   if entry:
                       lines.append(
@@ -306,8 +327,8 @@ jobs:
                       )
 
                       lines.append(
-                          "🃏 **Legend :** "
-                          + legend
+                          "🃏 **Legend : "
+                          + legend + "**"
                       )
 
                       lines.append(
@@ -324,7 +345,7 @@ jobs:
                   lines.append("")
 
               lines.append(
-                  "📋 [Résultats du tournoi]"
+                  "📋 [Résultats complets]"
                   f"({url})"
               )
 
@@ -344,7 +365,6 @@ jobs:
               }
 
           def discord_request(method, url, payload):
-              # Ne jamais afficher l'URL du webhook.
               response = requests.request(
                   method,
                   url,
@@ -359,6 +379,7 @@ jobs:
                   time.sleep(
                       min(float(delay) + 1, 30)
                   )
+
                   response = requests.request(
                       method,
                       url,
@@ -384,7 +405,9 @@ jobs:
               response.raise_for_status()
               time.sleep(1)
 
-              return str(response.json()["id"])
+              return str(
+                  response.json()["id"]
+              )
 
           def edit_message(message_id, embed):
               response = discord_request(
@@ -407,7 +430,9 @@ jobs:
               return True
 
           def load_state():
-              if not os.path.exists(STATE_FILE):
+              if not os.path.exists(
+                  STATE_FILE
+              ):
                   return {}
 
               with open(
@@ -422,7 +447,8 @@ jobs:
                   encoding="utf-8"
               ) as file:
                   json.dump(
-                      state, file,
+                      state,
+                      file,
                       ensure_ascii=False,
                       indent=2,
                       sort_keys=True
@@ -439,8 +465,8 @@ jobs:
 
               if not events:
                   raise RuntimeError(
-                      "Aucun tournoi trouve. "
-                      "Verifier la source Riftwatch."
+                      "Aucun tournoi trouve "
+                      "sur Riftwatch."
                   )
 
               created = 0
@@ -448,21 +474,22 @@ jobs:
               unchanged = 0
               errors = 0
 
-              # On limite seulement les
-              # nouveaux messages, pas les
-              # mises a jour des anciens.
+              # Premier test : deux tournois.
+              # Ensuite : cinq nouveaux
+              # tournois maximum par passage.
               first_run = not state
-              new_limit = 2 if first_run else 5
+              new_limit = (
+                  2 if first_run else 5
+              )
 
-              # D'abord les tournois qui ont
-              # deja un message Discord.
-              ordered = sorted(
-                  events,
+              # Controler d'abord les messages
+              # Discord deja existants.
+              events.sort(
                   key=lambda event:
                       event[0] not in state
               )
 
-              for url, listing_title in ordered:
+              for url, listing_title in events:
                   previous = state.get(url)
 
                   if (
@@ -478,13 +505,11 @@ jobs:
 
                       if not rankings:
                           print(
-                              "Top 8 non exploitable :",
+                              "Top 8 indisponible :",
                               title
                           )
                           continue
 
-                      # Comparaison uniquement
-                      # des donnees du tournoi.
                       snapshot = {
                           "title": title,
                           "rankings": rankings
@@ -503,7 +528,7 @@ jobs:
                           if snapshot == old_snapshot:
                               unchanged += 1
                               print(
-                                  "Sans changement :",
+                                  "Aucun changement :",
                                   title
                               )
                               continue
@@ -512,8 +537,11 @@ jobs:
                           title, url, rankings
                       )
 
-                      if previous and previous.get(
-                          "message_id"
+                      if (
+                          previous
+                          and previous.get(
+                              "message_id"
+                          )
                       ):
                           success = edit_message(
                               previous["message_id"],
@@ -521,32 +549,31 @@ jobs:
                           )
 
                           if success:
-                              updated += 1
-                              print(
-                                  "Message modifie :",
-                                  title
-                              )
                               message_id = previous[
                                   "message_id"
                               ]
-                          else:
+                              updated += 1
                               print(
-                                  "Ancien message Discord"
-                                  " introuvable :",
+                                  "Message Discord modifie :",
                                   title
                               )
+                          else:
                               message_id = create_message(
                                   embed
                               )
                               created += 1
-
+                              print(
+                                  "Ancien message supprime, "
+                                  "nouveau message cree :",
+                                  title
+                              )
                       else:
                           message_id = create_message(
                               embed
                           )
                           created += 1
                           print(
-                              "Nouveau message :",
+                              "Message Discord cree :",
                               title
                           )
 
@@ -556,8 +583,6 @@ jobs:
                           "rankings": rankings
                       }
 
-                      # Sauvegarder apres chaque
-                      # publication reussie.
                       save_state(state)
 
                   except Exception as error:
@@ -584,8 +609,8 @@ jobs:
 
               if errors:
                   raise RuntimeError(
-                      "Certains tournois n'ont pas "
-                      "pu etre traites."
+                      "Certains tournois "
+                      "n'ont pas ete traites."
                   )
 
           if __name__ == "__main__":
@@ -594,7 +619,7 @@ jobs:
 
           python decks.py
 
-      - name: Enregistrer la memoire des messages
+      - name: Memoriser les messages Discord
         if: always()
         run: |
           if [ -f top8_messages.json ]; then
@@ -602,7 +627,7 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add top8_messages.json
             if ! git diff --cached --quiet; then
-              git commit -m "Maj des messages Top 8 Discord"
+              git commit -m "Actualisation des Top 8 Discord"
               git push
             fi
           fi
