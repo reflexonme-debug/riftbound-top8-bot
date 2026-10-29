@@ -1,5 +1,5 @@
 
-name: Riftbound Top 8 Tournois
+name: Riftbound Top 8 - Suivi et mises a jour
 
 on:
   workflow_dispatch:
@@ -17,21 +17,23 @@ concurrency:
 jobs:
   decks:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Recuperer le depot
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Installer Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
       - name: Installer les bibliotheques
-        run: pip install requests beautifulsoup4
+        run: python -m pip install requests beautifulsoup4
 
-      - name: Chercher les Top 8 et envoyer Discord
+      - name: Chercher et actualiser les Top 8 Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_DECKS_WEBHOOK_URL }}
         run: |
@@ -41,51 +43,57 @@ jobs:
           import json
           import time
           from urllib.parse import urljoin, urlparse
-          from bs4 import BeautifulSoup
+
           import requests
+          from bs4 import BeautifulSoup
 
           ROOT = "https://riftwatch.gg"
           LIST_URL = ROOT + "/tournaments/"
-          STATE_FILE = "top8_seen.json"
-          WEBHOOK = os.environ["DISCORD_WEBHOOK"]
+          STATE_FILE = "top8_messages.json"
+          WEBHOOK = os.environ["DISCORD_WEBHOOK"].rstrip("/")
 
-          session = requests.Session()
-          session.headers.update({
-              "User-Agent": "Mozilla/5.0 RiftboundTop8Bot/2.0"
+          web = requests.Session()
+          web.headers.update({
+              "User-Agent": "Mozilla/5.0 RiftboundTop8Bot/4.0"
           })
 
           OFFICIAL = (
               "regional qualifier",
-              "showdown",
               "regional championship",
               "national championship",
-              "world championship"
+              "world championship",
+              "showdown",
           )
 
+          def clean(value):
+              return " ".join(str(value).split())
+
           def fetch(url):
-              response = session.get(url, timeout=30)
+              response = web.get(url, timeout=30)
               response.raise_for_status()
               return BeautifulSoup(
                   response.text, "html.parser"
               )
 
-          def normalize(text):
-              return " ".join(str(text).split())
-
-          def is_official(title):
-              text = title.lower()
-              return any(word in text for word in OFFICIAL)
+          def valid_url(url, prefix):
+              parsed = urlparse(url)
+              return (
+                  parsed.scheme == "https"
+                  and parsed.netloc in (
+                      "riftwatch.gg",
+                      "www.riftwatch.gg"
+                  )
+                  and parsed.path.startswith(prefix)
+              )
 
           def discover():
               soup = fetch(LIST_URL)
-              events = []
-              seen = set()
+              events = {}
 
               for a in soup.select("a[href]"):
-                  href = a.get("href", "")
-                  url = urljoin(ROOT, href)
+                  url = urljoin(ROOT, a["href"])
                   path = urlparse(url).path.rstrip("/")
-                  title = normalize(
+                  title = clean(
                       a.get_text(" ", strip=True)
                   )
 
@@ -94,33 +102,130 @@ jobs:
                   ):
                       continue
 
-                  if not is_official(title):
+                  if not valid_url(
+                      url, "/tournaments/"
+                  ):
                       continue
 
-                  if url in seen:
+                  if not any(
+                      word in title.lower()
+                      for word in OFFICIAL
+                  ):
                       continue
 
-                  seen.add(url)
-                  events.append((title, url))
+                  events[url] = title
 
-              return events
+              return list(events.items())
 
-          def read_top8(url):
+          def read_legend(deck_url):
+              try:
+                  soup = fetch(deck_url)
+
+                  # Lire la section contenant
+                  # la carte de type Legend.
+                  for heading in soup.find_all(
+                      ["h2", "h3", "h4"]
+                  ):
+                      label = clean(
+                          heading.get_text(
+                              " ", strip=True
+                          )
+                      ).lower()
+
+                      if (
+                          "legend and champion"
+                          not in label
+                      ):
+                          continue
+
+                      for element in heading.next_elements:
+                          tag = getattr(
+                              element, "name", None
+                          )
+
+                          if tag in (
+                              "h2", "h3", "h4"
+                          ):
+                              break
+
+                          if tag != "li":
+                              continue
+
+                          link = element.find("a")
+                          if link is None:
+                              continue
+
+                          name = clean(
+                              link.get_text(
+                                  " ", strip=True
+                              )
+                          )
+
+                          name = re.sub(
+                              r"^Quantity\s*\d+\s*",
+                              "",
+                              name,
+                              flags=re.IGNORECASE
+                          )
+
+                          name = re.sub(
+                              r"\s+\d+\s+energy.*$",
+                              "",
+                              name,
+                              flags=re.IGNORECASE
+                          )
+
+                          if name:
+                              return name[:100]
+
+                  # Autre lecture du titre de
+                  # la page du deck.
+                  if soup.title:
+                      title = clean(
+                          soup.title.get_text(
+                              " ", strip=True
+                          )
+                      )
+                      match = re.match(
+                          r"(.+?) Riftbound deck",
+                          title,
+                          flags=re.IGNORECASE
+                      )
+                      if match:
+                          return match.group(1)
+
+              except Exception as error:
+                  print(
+                      "Legend non lisible :",
+                      deck_url,
+                      type(error).__name__
+                  )
+
+              return None
+
+          def read_tournament(url, previous=None):
               soup = fetch(url)
 
-              title_tag = soup.find("h1")
+              h1 = soup.find("h1")
               title = (
-                  normalize(
-                      title_tag.get_text(" ", strip=True)
-                  )
-                  if title_tag else "Tournoi Riftbound"
+                  clean(h1.get_text(" ", strip=True))
+                  if h1 else "Tournoi Riftbound"
               )
 
               rankings = {}
 
+              # Les liens du classement sont
+              # affiches sous la forme :
+              # #1 Nam Dang, #2 Alex Gorica, etc.
               for a in soup.select("a[href]"):
-                  href = a.get("href", "")
-                  full = urljoin(ROOT, href)
+                  full = urljoin(
+                      ROOT, a.get("href", "")
+                  )
+
+                  if not valid_url(
+                      full, "/decks/"
+                  ):
+                      continue
 
                   if not re.fullmatch(
                       r"/decks/[^/]+/?",
@@ -128,7 +233,7 @@ jobs:
                   ):
                       continue
 
-                  label = normalize(
+                  label = clean(
                       a.get_text(" ", strip=True)
                   )
 
@@ -137,23 +242,48 @@ jobs:
                       label
                   )
 
-                  if not match:
+                  if match is None:
                       continue
 
-                  rank = int(match.group(1))
-                  player = match.group(2).strip()
+                  rank = str(int(match.group(1)))
+                  player = clean(match.group(2))
 
                   if rank not in rankings:
                       rankings[rank] = {
                           "player": player,
-                          "url": full
+                          "url": full,
+                          "legend": None
                       }
+
+              if not rankings:
+                  return title, {}
+
+              old_rankings = (
+                  (previous or {}).get("rankings")
+                  or {}
+              )
+
+              for rank, entry in rankings.items():
+                  old = old_rankings.get(rank, {})
+
+                  # Si le deck n'a pas change et
+                  # que sa Legend est deja connue,
+                  # on conserve cette information.
+                  # Sinon, on relit sa decklist.
+                  if (
+                      old.get("url") == entry["url"]
+                      and old.get("legend")
+                  ):
+                      entry["legend"] = old["legend"]
+                  else:
+                      entry["legend"] = read_legend(
+                          entry["url"]
+                      )
 
               return title, rankings
 
-          def send(title, url, rankings):
+          def build_embed(title, url, rankings):
               lines = []
-
               medals = {
                   1: "🥇",
                   2: "🥈",
@@ -161,59 +291,145 @@ jobs:
               }
 
               for rank in range(1, 9):
-                  entry = rankings.get(rank)
+                  entry = rankings.get(str(rank))
+                  symbol = medals.get(rank, "🃏")
 
                   if entry:
-                      symbol = medals.get(rank, "🃏")
                       lines.append(
                           f"{symbol} **{rank}. "
-                          f"{entry['player']}** — "
-                          f"[Voir le deck]"
+                          f"{entry['player']}**"
+                      )
+
+                      legend = (
+                          entry.get("legend")
+                          or "Non renseignée"
+                      )
+
+                      lines.append(
+                          "🃏 **Legend :** "
+                          + legend
+                      )
+
+                      lines.append(
+                          "🔗 [Voir le deck]"
                           f"({entry['url']})"
                       )
+
                   else:
                       lines.append(
-                          f"**{rank}.** Decklist "
-                          "non disponible"
+                          f"**{rank}.** "
+                          "Decklist non publiée"
                       )
 
-              payload = {
-                  "username": "Riftbound Top 8",
-                  "embeds": [{
-                      "title": "🏆 " + title[:230],
-                      "url": url,
-                      "description": (
-                          "\n".join(lines)
-                          + "\n\n"
-                          "📋 [Résultats complets]"
-                          f"({url})"
-                      )[:4000],
-                      "color": 15844367,
-                      "footer": {
-                          "text": (
-                              "Résultats : Riftwatch"
-                              " | Tournois officiels"
-                          )
-                      }
-                  }]
+                  lines.append("")
+
+              lines.append(
+                  "📋 [Résultats du tournoi]"
+                  f"({url})"
+              )
+
+              return {
+                  "title": "🏆 " + title[:220],
+                  "url": url,
+                  "description": "\n".join(
+                      lines
+                  )[:4000],
+                  "color": 15844367,
+                  "footer": {
+                      "text": (
+                          "Top 8 Riftbound"
+                          " | Source : Riftwatch"
+                      )
+                  }
               }
 
-              response = session.post(
-                  WEBHOOK, json=payload,
+          def discord_request(method, url, payload):
+              # Ne jamais afficher l'URL du webhook.
+              response = requests.request(
+                  method,
+                  url,
+                  json=payload,
                   timeout=30
               )
+
+              if response.status_code == 429:
+                  delay = response.json().get(
+                      "retry_after", 3
+                  )
+                  time.sleep(
+                      min(float(delay) + 1, 30)
+                  )
+                  response = requests.request(
+                      method,
+                      url,
+                      json=payload,
+                      timeout=30
+                  )
+
+              return response
+
+          def create_message(embed):
+              response = discord_request(
+                  "POST",
+                  WEBHOOK + "?wait=true",
+                  {
+                      "username": "Riftbound Top 8",
+                      "allowed_mentions": {
+                          "parse": []
+                      },
+                      "embeds": [embed]
+                  }
+              )
+
               response.raise_for_status()
-              time.sleep(2)
+              time.sleep(1)
+
+              return str(response.json()["id"])
+
+          def edit_message(message_id, embed):
+              response = discord_request(
+                  "PATCH",
+                  WEBHOOK + "/messages/"
+                  + str(message_id),
+                  {
+                      "embeds": [embed],
+                      "allowed_mentions": {
+                          "parse": []
+                      }
+                  }
+              )
+
+              if response.status_code == 404:
+                  return False
+
+              response.raise_for_status()
+              time.sleep(1)
+              return True
+
+          def load_state():
+              if not os.path.exists(STATE_FILE):
+                  return {}
+
+              with open(
+                  STATE_FILE,
+                  encoding="utf-8"
+              ) as file:
+                  return json.load(file)
+
+          def save_state(state):
+              with open(
+                  STATE_FILE, "w",
+                  encoding="utf-8"
+              ) as file:
+                  json.dump(
+                      state, file,
+                      ensure_ascii=False,
+                      indent=2,
+                      sort_keys=True
+                  )
 
           def main():
-              if os.path.exists(STATE_FILE):
-                  with open(
-                      STATE_FILE, encoding="utf-8"
-                  ) as f:
-                      seen = set(json.load(f))
-              else:
-                  seen = set()
-
+              state = load_state()
               events = discover()
 
               print(
@@ -223,68 +439,154 @@ jobs:
 
               if not events:
                   raise RuntimeError(
-                      "Aucun tournoi trouve sur Riftwatch. "
-                      "Verifier la structure du site."
+                      "Aucun tournoi trouve. "
+                      "Verifier la source Riftwatch."
                   )
 
-              sent = 0
+              created = 0
+              updated = 0
+              unchanged = 0
+              errors = 0
 
-              # Deux tournois maximum au premier test.
-              limit = 2 if not seen else 5
+              # On limite seulement les
+              # nouveaux messages, pas les
+              # mises a jour des anciens.
+              first_run = not state
+              new_limit = 2 if first_run else 5
 
-              for listing_title, url in events:
-                  if url in seen:
+              # D'abord les tournois qui ont
+              # deja un message Discord.
+              ordered = sorted(
+                  events,
+                  key=lambda event:
+                      event[0] not in state
+              )
+
+              for url, listing_title in ordered:
+                  previous = state.get(url)
+
+                  if (
+                      previous is None
+                      and created >= new_limit
+                  ):
                       continue
 
                   try:
-                      title, rankings = read_top8(url)
-
-                      print(
-                          title,
-                          "- decklists Top 8 :",
-                          len(rankings)
+                      title, rankings = read_tournament(
+                          url, previous
                       )
 
-                      # Au moins une decklist du Top 8
-                      # est necessaire pour publier.
                       if not rankings:
                           print(
-                              "Ignore : aucune decklist",
-                              url
+                              "Top 8 non exploitable :",
+                              title
                           )
                           continue
 
-                      send(title, url, rankings)
-                      seen.add(url)
-                      sent += 1
+                      # Comparaison uniquement
+                      # des donnees du tournoi.
+                      snapshot = {
+                          "title": title,
+                          "rankings": rankings
+                      }
 
-                      print(
-                          "Discord : tournoi envoye",
-                          url
+                      if previous:
+                          old_snapshot = {
+                              "title": previous.get(
+                                  "title"
+                              ),
+                              "rankings": previous.get(
+                                  "rankings", {}
+                              )
+                          }
+
+                          if snapshot == old_snapshot:
+                              unchanged += 1
+                              print(
+                                  "Sans changement :",
+                                  title
+                              )
+                              continue
+
+                      embed = build_embed(
+                          title, url, rankings
                       )
 
-                      if sent >= limit:
-                          break
+                      if previous and previous.get(
+                          "message_id"
+                      ):
+                          success = edit_message(
+                              previous["message_id"],
+                              embed
+                          )
+
+                          if success:
+                              updated += 1
+                              print(
+                                  "Message modifie :",
+                                  title
+                              )
+                              message_id = previous[
+                                  "message_id"
+                              ]
+                          else:
+                              print(
+                                  "Ancien message Discord"
+                                  " introuvable :",
+                                  title
+                              )
+                              message_id = create_message(
+                                  embed
+                              )
+                              created += 1
+
+                      else:
+                          message_id = create_message(
+                              embed
+                          )
+                          created += 1
+                          print(
+                              "Nouveau message :",
+                              title
+                          )
+
+                      state[url] = {
+                          "message_id": message_id,
+                          "title": title,
+                          "rankings": rankings
+                      }
+
+                      # Sauvegarder apres chaque
+                      # publication reussie.
+                      save_state(state)
 
                   except Exception as error:
+                      errors += 1
                       print(
                           "Erreur tournoi :",
-                          url, repr(error)
+                          url,
+                          type(error).__name__,
+                          str(error)[:120]
                       )
 
-              with open(
-                  STATE_FILE, "w",
-                  encoding="utf-8"
-              ) as f:
-                  json.dump(
-                      sorted(seen), f,
-                      ensure_ascii=False, indent=2
-                  )
-
               print(
-                  "Nouveaux tournois envoyes :",
-                  sent
+                  "Nouveaux messages :", created
               )
+              print(
+                  "Messages modifies :", updated
+              )
+              print(
+                  "Sans changement :", unchanged
+              )
+              print(
+                  "Erreurs :", errors
+              )
+
+              if errors:
+                  raise RuntimeError(
+                      "Certains tournois n'ont pas "
+                      "pu etre traites."
+                  )
 
           if __name__ == "__main__":
               main()
@@ -292,12 +594,15 @@ jobs:
 
           python decks.py
 
-      - name: Memoriser les tournois deja envoyes
+      - name: Enregistrer la memoire des messages
+        if: always()
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add top8_seen.json
-          if ! git diff --cached --quiet; then
-            git commit -m "Maj des Top 8 deja publies"
-            git push
+          if [ -f top8_messages.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add top8_messages.json
+            if ! git diff --cached --quiet; then
+              git commit -m "Maj des messages Top 8 Discord"
+              git push
+            fi
           fi
