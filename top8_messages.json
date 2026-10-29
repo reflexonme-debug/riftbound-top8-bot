@@ -1,1 +1,69 @@
-{}
+{
+  "https://riftwatch.gg/tournaments/melbourne-showdown-2026-10-24/": {
+    "message_id": "1565335496891302051",
+    "rankings": {
+      "1": {
+        "legend": "Diana, Scorn of the Moon",
+        "player": "Soul",
+        "url": "https://riftwatch.gg/decks/melbourne-showdown-2026-1/"
+      },
+      "2": {
+        "legend": "Riven, The Exile",
+        "player": "his sion",
+        "url": "https://riftwatch.gg/decks/melbourne-showdown-2026-2/"
+      },
+      "8": {
+        "legend": "Riven, The Exile",
+        "player": "Yecob",
+        "url": "https://riftwatch.gg/decks/melbourne-showdown-2026-8/"
+      }
+    },
+    "title": "Melbourne Showdown"
+  },
+  "https://riftwatch.gg/tournaments/sacramento-showdown-2026-10-24/": {
+    "message_id": "1565335489798742129",
+    "rankings": {
+      "1": {
+        "legend": "Riven, The Exile",
+        "player": "Nam Dang",
+        "url": "https://riftwatch.gg/decks/sacramento-1/"
+      },
+      "2": {
+        "legend": "Akali, Rogue Assassin",
+        "player": "Alex Gorica",
+        "url": "https://riftwatch.gg/decks/sacramento-2/"
+      },
+      "3": {
+        "legend": "Riven, The Exile",
+        "player": "Bo Su",
+        "url": "https://riftwatch.gg/decks/sacramento-3/"
+      },
+      "4": {
+        "legend": "Riven, The Exile",
+        "player": "Arnon",
+        "url": "https://riftwatch.gg/decks/sacramento-4/"
+      },
+      "5": {
+        "legend": "Viktor, Herald of the Arcane",
+        "player": "Calvin Jin",
+        "url": "https://riftwatch.gg/decks/sacramento-5/"
+      },
+      "6": {
+        "legend": "Riven, The Exile",
+        "player": "Capt.Dewgong",
+        "url": "https://riftwatch.gg/decks/sacramento-6/"
+      },
+      "7": {
+        "legend": "Kennen, Heart of the Tempest",
+        "player": "Dylan Sumner",
+        "url": "https://riftwatch.gg/decks/sacramento-7/"
+      },
+      "8": {
+        "legend": "Rengar, Pridestalker",
+        "player": "Daniel Vu",
+        "url": "https://riftwatch.gg/decks/sacramento-8/"
+      }
+    },
+    "title": "Sacramento Showdown"
+  }
+}
