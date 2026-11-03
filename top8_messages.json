@@ -45,6 +45,52 @@
     },
     "title": "Melbourne Showdown"
   },
+  "https://riftwatch.gg/tournaments/orlando-showdown-2026-10-31/": {
+    "message_id": "1567096995242582108",
+    "rankings": {
+      "1": {
+        "legend": "Riven, The Exile",
+        "player": "MERC Koopastar",
+        "url": "https://riftwatch.gg/decks/orlando-showdown-2026-1/"
+      },
+      "2": {
+        "legend": "Riven, The Exile",
+        "player": "Tabris",
+        "url": "https://riftwatch.gg/decks/orlando-showdown-2026-2/"
+      },
+      "3": {
+        "legend": "Kha'Zix, Voidreaver",
+        "player": "LURK xSimo",
+        "url": "https://riftwatch.gg/decks/orlando-showdown-2026-3/"
+      },
+      "4": {
+        "legend": "Kai'Sa, Daughter of the Void",
+        "player": "Frosty",
+        "url": "https://riftwatch.gg/decks/orlando-showdown-2026-4/"
+      },
+      "5": {
+        "legend": "Riven, The Exile",
+        "player": "TM2",
+        "url": "https://riftwatch.gg/decks/orlando-showdown-2026-5/"
+      },
+      "6": {
+        "legend": "Riven, The Exile",
+        "player": "CTCG Relivia",
+        "url": "https://riftwatch.gg/decks/orlando-showdown-2026-6/"
+      },
+      "7": {
+        "legend": "Jayce, Defender of Tomorrow",
+        "player": "Swagyolo420yea",
+        "url": "https://riftwatch.gg/decks/orlando-showdown-2026-7/"
+      },
+      "8": {
+        "legend": "Jayce, Defender of Tomorrow",
+        "player": "Zapdos",
+        "url": "https://riftwatch.gg/decks/orlando-showdown-2026-8/"
+      }
+    },
+    "title": "Orlando Showdown"
+  },
   "https://riftwatch.gg/tournaments/sacramento-showdown-2026-10-24/": {
     "message_id": "1565335489798742129",
     "rankings": {
