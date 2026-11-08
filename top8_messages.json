@@ -136,5 +136,51 @@
       }
     },
     "title": "Sacramento Showdown"
+  },
+  "https://riftwatch.gg/tournaments/stuttgart-regional-championship-2026-11-06/": {
+    "message_id": "1569104155879018528",
+    "rankings": {
+      "1": {
+        "legend": "Kennen, Heart of the Tempest",
+        "player": "ASC Evansrhim",
+        "url": "https://riftwatch.gg/decks/rc-stuttgart-2026-1/"
+      },
+      "2": {
+        "legend": "Riven, The Exile",
+        "player": "Sonecon",
+        "url": "https://riftwatch.gg/decks/rc-stuttgart-2026-2/"
+      },
+      "3": {
+        "legend": "Riven, The Exile",
+        "player": "DiamondHat",
+        "url": "https://riftwatch.gg/decks/rc-stuttgart-2026-3/"
+      },
+      "4": {
+        "legend": "Riven, The Exile",
+        "player": "BQO Caravaggio",
+        "url": "https://riftwatch.gg/decks/rc-stuttgart-2026-4/"
+      },
+      "5": {
+        "legend": "Kai'Sa, Daughter of the Void",
+        "player": "CTCG DZiden",
+        "url": "https://riftwatch.gg/decks/rc-stuttgart-2026-5/"
+      },
+      "6": {
+        "legend": "Riven, The Exile",
+        "player": "lets see lol",
+        "url": null
+      },
+      "7": {
+        "legend": "Kennen, Heart of the Tempest",
+        "player": "HXN Gonkra",
+        "url": "https://riftwatch.gg/decks/rc-stuttgart-2026-7/"
+      },
+      "8": {
+        "legend": "Kennen, Heart of the Tempest",
+        "player": "On Curve Willy",
+        "url": "https://riftwatch.gg/decks/rc-stuttgart-2026-8/"
+      }
+    },
+    "title": "Stuttgart Regional Championship"
   }
 }
